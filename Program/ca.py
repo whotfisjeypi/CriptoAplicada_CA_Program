@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import argparse
+import json
 
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -9,10 +10,28 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 CERTS_DIR = Path("certs")
+DB_DIR = Path("db")
+REVOKED_FILE = DB_DIR / "revoked.json"
+ISSUED_FILE = DB_DIR / "issued.json"
 
 
 def ensure_dirs() -> None:
     CERTS_DIR.mkdir(exist_ok=True)
+    DB_DIR.mkdir(exist_ok=True)
+
+    if not REVOKED_FILE.exists():
+        REVOKED_FILE.write_text("[]", encoding="utf-8")
+
+    if not ISSUED_FILE.exists():
+        ISSUED_FILE.write_text("[]", encoding="utf-8")
+
+
+def load_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_json(path: Path, data) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def save_pem_private_key(path: Path, private_key) -> None:
@@ -152,9 +171,38 @@ def issue_user_certificate(username: str) -> None:
     save_pem_private_key(user_key_path, user_key)
     save_pem_certificate(user_cert_path, user_cert)
 
+    issued = load_json(ISSUED_FILE)
+    issued.append({
+        "username": username,
+        "serial_number": str(user_cert.serial_number),
+        "cert_path": str(user_cert_path),
+        "issued_at": now.isoformat(),
+        "expires_at": user_cert.not_valid_after_utc.isoformat(),
+    })
+    save_json(ISSUED_FILE, issued)
+
     print(f"Certificado emitido para '{username}':")
     print(f"  - Clave privada: {user_key_path}")
     print(f"  - Certificado: {user_cert_path}")
+    print(f"  - Serial: {user_cert.serial_number}")
+
+
+def list_certificates() -> None:
+    ensure_dirs()
+    issued = load_json(ISSUED_FILE)
+
+    if not issued:
+        print("No hay certificados emitidos.")
+        return
+
+    print("Certificados emitidos:")
+    for item in issued:
+        print("-" * 40)
+        print(f"Usuario: {item['username']}")
+        print(f"Serial: {item['serial_number']}")
+        print(f"Certificado: {item['cert_path']}")
+        print(f"Emitido: {item['issued_at']}")
+        print(f"Expira: {item['expires_at']}")
 
 
 def main():
@@ -167,12 +215,16 @@ def main():
     issue_parser = subparsers.add_parser("issue", help="Emitir certificado a un usuario")
     issue_parser.add_argument("username", help="Nombre del usuario")
 
+    subparsers.add_parser("list", help="Listar certificados emitidos")
+
     args = parser.parse_args()
 
     if args.command == "init":
         create_ca(args.cn)
     elif args.command == "issue":
         issue_user_certificate(args.username)
+    elif args.command == "list":
+        list_certificates()
 
 
 if __name__ == "__main__":

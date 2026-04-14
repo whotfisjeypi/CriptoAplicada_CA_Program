@@ -1,16 +1,28 @@
 from pathlib import Path
+from datetime import datetime, timezone
 import argparse
+import base64
+import json
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 
+REVOKED_FILE = Path("db/revoked.json")
+
+
 def load_certificate(path: Path) -> x509.Certificate:
     return x509.load_pem_x509_certificate(path.read_bytes())
 
 
-def verify_certificate(user_cert: x509.Certificate, ca_cert: x509.Certificate) -> None:
+def load_revoked():
+    if not REVOKED_FILE.exists():
+        return []
+    return json.loads(REVOKED_FILE.read_text(encoding="utf-8"))
+
+
+def verify_certificate_signature(user_cert: x509.Certificate, ca_cert: x509.Certificate) -> None:
     ca_public_key = ca_cert.public_key()
 
     ca_public_key.verify(
@@ -21,9 +33,31 @@ def verify_certificate(user_cert: x509.Certificate, ca_cert: x509.Certificate) -
     )
 
 
+def verify_certificate_validity(user_cert: x509.Certificate) -> None:
+    now = datetime.now(timezone.utc)
+
+    if now < user_cert.not_valid_before_utc:
+        raise ValueError("El certificado aún no es válido")
+
+    if now > user_cert.not_valid_after_utc:
+        raise ValueError("El certificado ya expiró")
+
+
+def verify_certificate_revocation(user_cert: x509.Certificate) -> None:
+    revoked = load_revoked()
+    serial = str(user_cert.serial_number)
+
+    for item in revoked:
+        if item["serial_number"] == serial:
+            raise ValueError(
+                f"El certificado está revocado. Motivo: {item['reason']}, fecha: {item['revoked_at']}"
+            )
+
+
 def verify_file_signature(file_path: Path, signature_path: Path, user_cert: x509.Certificate) -> None:
     data = file_path.read_bytes()
-    signature = signature_path.read_bytes()
+    payload = json.loads(signature_path.read_text(encoding="utf-8"))
+    signature = base64.b64decode(payload["signature"])
     user_public_key = user_cert.public_key()
 
     user_public_key.verify(
@@ -35,6 +69,8 @@ def verify_file_signature(file_path: Path, signature_path: Path, user_cert: x509
         ),
         hashes.SHA256(),
     )
+
+    print(f"Timestamp de firma: {payload['timestamp']}")
 
 
 def main():
@@ -59,20 +95,32 @@ def main():
     ca_cert = load_certificate(ca_cert_path)
 
     try:
-        verify_certificate(user_cert, ca_cert)
-        print("Certificado del usuario: VÁLIDO (firmado por la CA)")
+        verify_certificate_signature(user_cert, ca_cert)
+        print("Certificado del usuario: firmado por la CA ")
     except Exception as e:
-        print("Certificado del usuario: INVÁLIDO")
+        print("Certificado del usuario: INVÁLIDO ")
+        print(f"Detalle: {e}")
+        return
+
+    try:
+        verify_certificate_validity(user_cert)
+        print("Vigencia del certificado: válida ")
+    except Exception as e:
+        print("Vigencia del certificado: inválida ")
+        print(f"Detalle: {e}")
+        return
+
+    try:
+        verify_certificate_revocation(user_cert)
+        print("Estado de revocación: no revocado ")
+    except Exception as e:
+        print("Estado de revocación: revocado ")
         print(f"Detalle: {e}")
         return
 
     try:
         verify_file_signature(file_path, signature_path, user_cert)
-        print("Firma del archivo: VÁLIDA")
+        print("Firma del archivo: VÁLIDA ")
     except Exception as e:
-        print("Firma del archivo: INVÁLIDA")
+        print("Firma del archivo: INVÁLIDA ")
         print(f"Detalle: {e}")
-
-
-if __name__ == "__main__":
-    main()
