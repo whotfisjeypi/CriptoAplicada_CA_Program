@@ -124,3 +124,6 @@ def main():
     except Exception as e:
         print("Firma del archivo: INVÁLIDA ")
         print(f"Detalle: {e}")
+
+if __name__ == "__main__":
+    main()
